@@ -34,6 +34,20 @@ The system doesn't just guess; it plans.
 - **Battle Matrix:** Ranks peers based on a weighted mix of Valuation (Fundamentals) vs. Demand (GMP/Sentiment).
 
 ---
+## 📂 Project Structure
+
+IPO_Project
+├── .env                     # API Keys (Groq, Reddit)
+├── app.py                   # Main Streamlit UI (Glassmorphism design)
+├── brain.py                 # The Logic Controller (Planner)
+├── tools_library.py         # The Workers (Scrapers, Vector DB, RAG)
+├── report_engine.py         # Logic for generating 360° Reports
+├── comparison_engine.py     # Logic for Peer Comparison Battles
+├── requirements.txt         # Dependency list (Golden Set)
+├── rhp_chat.py              # Standalone RHP Chat Debugger
+└── pdfs/                    # Auto-downloaded RHP documents
+
+---
 
 ## 🛠️ System Architecture
 
@@ -57,15 +71,4 @@ graph TD
     
     Synthesis["📝 LLM Synthesis"] --> Output["Final Answer"]
 
-📂 Project Structure
-IPO_Project/
-├── .env                     # API Keys (Groq, Reddit)
-├── app.py                   # Main Streamlit UI (Glassmorphism design)
-├── brain.py                 # The Logic Controller (Planner)
-├── tools_library.py         # The Workers (Scrapers, Vector DB, RAG)
-├── report_engine.py         # Logic for generating 360° Reports
-├── comparison_engine.py     # Logic for Peer Comparison Battles
-├── requirements.txt         # Dependency list (Golden Set)
-├── rhp_chat.py              # Standalone RHP Chat Debugger
-└── pdfs/                    # Auto-downloaded RHP documents
-'''
+
