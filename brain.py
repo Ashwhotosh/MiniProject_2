@@ -12,11 +12,11 @@ load_dotenv()
 # 1. Define the Planner Structure
 class ToolCall(BaseModel):
     tool_name: Literal["gmp_tool", "sentiment_tool", "rhp_tool"]
-    arguments: str = Field(description="Specific query or argument for the tool")
+    arguments: str = Field(description="The specific question or argument for the tool")
 
 
 class Plan(BaseModel):
-    steps: List[ToolCall] = Field(description="List of tools to execute to answer the user query")
+    steps: List[ToolCall] = Field(description="List of tools to execute")
 
 
 # 2. The Brain Logic
@@ -32,15 +32,16 @@ def execute_brain(user_query, ipo_name, vector_store):
     structured_llm = llm.with_structured_output(Plan)
 
     system_prompt = f"""
-        You are an expert IPO Analyst Brain.
-        User Query: "{user_query}"
-        Current IPO: "{ipo_name}"
+    You are an expert IPO Analyst Brain.
+    User Query: "{user_query}"
+    Current IPO: "{ipo_name}"
 
-        Break the query into steps. Available Tools:
-        1. 'gmp_tool': For **Price, GMP, Open Date, Close Date, Allotment Date**, Listing, Status. (Arg: 'details')
-        2. 'sentiment_tool': For Market Mood, Hype. (Arg: 'reddit', 'news', or 'all')
-        3. 'rhp_tool': For Peers, Financials, Risks, Business Model.
-        """
+    Break the query into steps. Available Tools:
+    1. 'gmp_tool': For Price, GMP, Dates, Listing, Status. (Arg: 'details')
+    2. 'sentiment_tool': For Market Mood, Hype. (Arg: 'reddit', 'news', or 'all')
+    3. 'rhp_tool': Strictly for information found in the PDF (Peers, Financials, Risks).
+       - IMPORTANT: For the argument, copy the User's specific question about the document verbatim. Do not summarize it to a keyword.
+    """
 
     try:
         plan = structured_llm.invoke(system_prompt)
@@ -62,8 +63,18 @@ def execute_brain(user_query, ipo_name, vector_store):
             output = fetch_sentiment(ipo_name, source=step.arguments)
 
         elif step.tool_name == "rhp_tool":
-            # Pass the vector_store explicitly
-            output = query_rhp(ipo_name, query=step.arguments, vector_store=vector_store)
+            # --- FIX IS HERE: RAW QUERY INJECTION ---
+            # If the user is just asking a document question (single step plan),
+            # we use their EXACT query instead of the AI's summarized argument.
+            # This ensures 'rhp_chat.py' level accuracy.
+            search_query = step.arguments
+
+            if len(plan.steps) == 1:
+                search_query = user_query
+
+            # Pass vector_store explicitly
+            output = query_rhp(ipo_name, query=search_query, vector_store=vector_store)
+            # ----------------------------------------
 
         results.append(f"--- RESULT FROM {step.tool_name.upper()} ---\n{output}\n")
         yield f"✅ {step.tool_name} Complete."
@@ -74,10 +85,10 @@ def execute_brain(user_query, ipo_name, vector_store):
     final_prompt = f"""
     User Query: {user_query}
 
-    Data Collected from Agents:
+    Data Collected:
     {"".join(results)}
 
-    Write a professional, coherent response answering the user's query based ONLY on the data above.
+    Answer the user's query professionally based ONLY on the data above.
     """
 
     final_response = llm.invoke(final_prompt).content

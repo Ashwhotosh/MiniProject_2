@@ -18,28 +18,8 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 
-# --- FETCH ALL NAMES & CATEGORIZE ---
-def get_all_ipo_names():
-    categorized = {"Mainboard": [], "SME": []}
-    try:
-        r = requests.get("https://www.ipopremium.in/ipo", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        data = r.json().get("data", [])
-
-        for d in data:
-            raw_name = d.get("name", "")
-            clean_name = BeautifulSoup(raw_name, "html.parser").get_text(" ", strip=True)
-            if "SME" in clean_name:
-                categorized["SME"].append(clean_name)
-            else:
-                categorized["Mainboard"].append(clean_name)
-        return categorized
-    except Exception as e:
-        return {"Mainboard": [], "SME": []}
-
-
-# --- WORKER 1: IPO DETAILS (FIXED) ---
+# --- WORKER 1: IPO DETAILS ---
 def fetch_ipo_details(ipo_name: str):
-    """Fetches hard data: GMP, Dates, Price, Allotment."""
     try:
         r = requests.get("https://www.ipopremium.in/ipo", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         data = r.json().get("data", [])
@@ -50,9 +30,9 @@ def fetch_ipo_details(ipo_name: str):
             target = match[0]
             for d in data:
                 if BeautifulSoup(d.get("name", ""), "html.parser").get_text(" ", strip=True) == target:
-                    # --- FIX IS HERE: ADDED OPEN, CLOSE, ALLOTMENT ---
                     return {
                         "id": d.get("id"),
+                        "slug": d.get("slug", ""),
                         "Company": target,
                         "GMP": d.get("premium", "N/A"),
                         "Price Band": d.get("price", "N/A"),
@@ -61,7 +41,7 @@ def fetch_ipo_details(ipo_name: str):
                         "Allotment Date": d.get("allotment", "N/A"),
                         "Listing Date": d.get("listing", "N/A"),
                         "Status": d.get("status", "N/A"),
-                        "Issue Size": d.get("size", "N/A")  # Sometimes size is available
+                        "Issue Size": d.get("size", "N/A")
                     }
     except Exception as e:
         return {"error": str(e)}
@@ -71,7 +51,6 @@ def fetch_ipo_details(ipo_name: str):
 # --- WORKER 2: SENTIMENT ---
 def fetch_sentiment(ipo_name: str, source: str = "all"):
     texts = []
-
     if source in ["reddit", "all"]:
         try:
             reddit = praw.Reddit(
@@ -92,47 +71,33 @@ def fetch_sentiment(ipo_name: str, source: str = "all"):
         except:
             pass
 
-    if not texts:
-        return "No sentiment data found."
-    return "\n".join(texts)
+    return "\n".join(texts) if texts else "No sentiment data found."
 
 
 # --- WORKER 3: RHP DOCUMENT ---
 def query_rhp(ipo_name, query, vector_store=None):
     if not vector_store:
-        return "⚠️ RHP Document is not loaded. Please initialize the system first."
+        return "⚠️ RHP Document is not loaded."
 
     llm = ChatGroq(api_key=os.getenv("GROQ_API_KEY"), model="llama-3.1-8b-instant")
     retriever = vector_store.as_retriever(search_kwargs={"k": 5})
 
     context_q_system_prompt = (
-        "Given a chat history and the latest user question "
-        "which might reference context in the chat history, "
-        "formulate a standalone question which can be understood "
-        "without the chat history. Do NOT answer the question, "
-        "just reformulate it if needed and otherwise return it as is."
+        "Given a chat history and the latest user question, formulate a standalone question. "
+        "Do NOT answer the question, just reformulate it."
     )
     context_q_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", context_q_system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-        ]
+        [("system", context_q_system_prompt), MessagesPlaceholder("chat_history"), ("human", "{input}")]
     )
     history_aware_retriever = create_history_aware_retriever(llm, retriever, context_q_prompt)
 
     qa_system_prompt = (
         "You are an expert financial analyst reading an IPO RHP document. "
-        "Use the following pieces of retrieved context to answer the question. "
-        "If the answer is not in the context, strictly say 'I cannot find this information in the RHP document'. "
+        "Answer the question based strictly on the context. If not found, say 'I cannot find this information in the RHP document'.\n\n"
         "Context:\n{context}"
     )
     qa_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", qa_system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-        ]
+        [("system", qa_system_prompt), MessagesPlaceholder("chat_history"), ("human", "{input}")]
     )
 
     chain = create_retrieval_chain(history_aware_retriever, create_stuff_documents_chain(llm, qa_prompt))
@@ -144,17 +109,42 @@ def query_rhp(ipo_name, query, vector_store=None):
         return f"Error querying RHP: {str(e)}"
 
 
-# --- HELPERS FOR PDF ---
-def download_pdf_logic(ipo_id):
+# --- PDF HELPERS ---
+def download_pdf_logic(details):
+    ipo_id = details.get('id')
+    slug = details.get('slug')
     os.makedirs("pdfs", exist_ok=True)
-    path = os.path.join("pdfs", f"{ipo_id}.pdf")
-    if os.path.exists(path): return path
+    save_path = os.path.join("pdfs", f"{ipo_id}.pdf")
+
+    if os.path.exists(save_path): return save_path
+
+    page_url = f"https://www.ipopremium.in/view/ipo/{ipo_id}/{slug}"
     try:
-        r = requests.get(f"https://assets.ipopremium.in/images/ipo/{ipo_id}_rhp.pdf",
-                         headers={"User-Agent": "Mozilla/5.0"}, stream=True)
-        if r.status_code == 200:
-            with open(path, "wb") as f: f.write(r.content)
-            return path
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(page_url, headers=headers)
+        soup = BeautifulSoup(r.content, "html.parser")
+
+        target_url = None
+        candidates = []
+        for a in soup.find_all("a", href=True):
+            text = a.get_text().lower()
+            if "rhp" in text or "drhp" in text or "anchor" in text:
+                candidates.append({"link": a["href"], "text": text})
+
+        for c in candidates:
+            if "rhp" in c["text"] and "drhp" not in c["text"]: target_url = c["link"]; break
+        if not target_url:
+            for c in candidates:
+                if "drhp" in c["text"]: target_url = c["link"]; break
+        if not target_url:
+            target_url = f"https://assets.ipopremium.in/images/ipo/{ipo_id}_rhp.pdf"
+
+        if target_url:
+            if not target_url.startswith("http"): target_url = "https://www.ipopremium.in" + target_url
+            pdf_resp = requests.get(target_url, headers=headers, stream=True)
+            if pdf_resp.status_code == 200:
+                with open(save_path, "wb") as f: f.write(pdf_resp.content)
+                return save_path
     except:
         pass
     return None
@@ -177,27 +167,47 @@ def build_vs_logic(pdf_path):
     return Chroma.from_documents(documents=splits, embedding=emb, client=client, collection_name="ipo_collection")
 
 
-# --- NEW: PEER DISCOVERY ---
-def get_concurrent_ipos(target_name):
-    """
-    Returns a list of IPO names that are currently active (Not Listed yet),
-    excluding the target IPO itself.
-    """
-    concurrent_list = []
+# --- CATEGORIZATION HELPERS ---
+def get_all_ipo_names():
+    categorized = {"Mainboard": [], "SME": []}
     try:
         r = requests.get("https://www.ipopremium.in/ipo", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         data = r.json().get("data", [])
-
         for d in data:
-            raw_name = d.get("name", "")
-            clean_name = BeautifulSoup(raw_name, "html.parser").get_text(" ", strip=True)
+            name = BeautifulSoup(d.get("name", ""), "html.parser").get_text(" ", strip=True)
+            if "SME" in name:
+                categorized["SME"].append(name)
+            else:
+                categorized["Mainboard"].append(name)
+        return categorized
+    except:
+        return {"Mainboard": [], "SME": []}
+
+
+def get_concurrent_ipos(target_name, category_filter="All"):
+    """
+    Returns active IPOs filtered by category.
+    category_filter: 'Mainboard', 'SME', or 'All'
+    """
+    peers = []
+    try:
+        r = requests.get("https://www.ipopremium.in/ipo", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        for d in r.json().get("data", []):
+            name = BeautifulSoup(d.get("name", ""), "html.parser").get_text(" ", strip=True)
             status = d.get("status", "").lower()
 
-            # Filter: Check if name is different AND status implies it's active
-            # (e.g., 'bidding', 'upcoming', 'waiting' are active. 'listed' is past.)
-            if clean_name != target_name and "listed" not in status:
-                concurrent_list.append(clean_name)
+            # 1. Skip if it is the target itself
+            if name == target_name: continue
 
-        return concurrent_list
+            # 2. Skip if listed (we want active ones)
+            if "listed" in status: continue
+
+            # 3. Apply Category Filter
+            is_sme = "SME" in name
+            if category_filter == "Mainboard" and is_sme: continue
+            if category_filter == "SME" and not is_sme: continue
+
+            peers.append(name)
+        return peers
     except:
         return []

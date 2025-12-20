@@ -37,7 +37,10 @@ with st.sidebar:
                 st.write(f"✅ Found ID: {details['id']}")
 
                 st.write("2️⃣ Downloading PDF...")
-                pdf_path = download_pdf_logic(details['id'])
+
+                # --- FIX IS HERE: Pass the whole 'details' dict, not just the ID ---
+                pdf_path = download_pdf_logic(details)
+                # -----------------------------------------------------------------
 
                 if pdf_path:
                     st.write("3️⃣ Building Vector Index...")
